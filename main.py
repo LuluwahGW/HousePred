@@ -1,210 +1,193 @@
-# =====================================================================
-# House Prices Prediction Using Regression
-# Kaggle: House Prices - Advanced Regression Techniques
-# https://www.kaggle.com/c/house-prices-advanced-regression-techniques
-#
-# =====================================================================
-import pandas as pd
+# House Prices - visual walkthrough
+import os
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split, cross_val_predict, cross_val_score
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
-# ---
-# (SETUP: loading the data from csv files)
-# ---
-print("Loading data")
-try:
-    train_data_raw = pd.read_csv('train.csv', index_col='Id')
-    test_data = pd.read_csv('test.csv', index_col='Id')
-except FileNotFoundError:
-    print("Error: train.csv or test.csv not found.")
-    exit()
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.linear_model import Ridge
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.model_selection import cross_val_score, cross_val_predict
 
-print("\n--- 5. Dataset Sample ---")
-print("Displaying head() of the *original* raw training data:")
-print(train_data_raw.head())
+os.makedirs("plots", exist_ok=True)       # create output folder
+sns.set_theme(style="whitegrid")          # global plot style
 
 
-train_data = train_data_raw.copy()
-y_train_full = train_data.pop('SalePrice')  
-all_data = pd.concat([train_data, test_data])
-print(f"Combined data shape: {all_data.shape}")
+def save(name):
+    plt.tight_layout()                    # fix spacing
+    plt.savefig(f"plots/{name}.png", dpi=120)   # save as image
+    plt.close()                           # free memory
+    print(f"saved plots/{name}.png")
 
 
-# ---
-# 2. DATA ANALYSIS
-# ---
-print("\n--- 2. Data Analysis ---")
-# 2.1: Check for nulls
-print("\nChecking for Null Values:")
-nulls = all_data.isnull().sum()
-nulls = nulls[nulls > 0].sort_values(ascending=False)
-print(nulls.head(5))
+# 0. LOAD DATA
+train = pd.read_csv("train.csv", index_col="Id")   # read CSV table
+test = pd.read_csv("test.csv", index_col="Id")
+print("train shape:", train.shape, "| test shape:", test.shape)
 
 
-print("\nPlotting Quality vs. Price...")
-plt.figure(figsize=(10, 6))
-sns.scatterplot(x=train_data_raw['OverallQual'], y=y_train_full, alpha=0.6, color='steelblue')
-plt.title('Data Analysis: Overall Quality vs. SalePrice (Scatter Plot)')
-plt.ylabel('SalePrice (Dollars)')
-plt.xlabel('Overall Quality')
-plt.savefig('qual_vs_price_scatter.png')
-print("Saved 'qual_vs_price_scatter.png'")
+# PLOT 1: target before/after log
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))    # two side-by-side plots
+sns.histplot(train["SalePrice"], kde=True, ax=axes[0], color="steelblue")   # distribution histogram
+axes[0].set_title("SalePrice (skewed)")
+sns.histplot(np.log1p(train["SalePrice"]), kde=True, ax=axes[1], color="seagreen")   # log reduces skew
+axes[1].set_title("log(SalePrice) (bell curve)")
+save("01_target_before_after_log")
 
 
-# ---
-# 3. DATA PREPROCESSING
-# ---
-print("\n--- 3. Data Preprocessing ---")
-# 3.1: Visualize missing data + info()
-print("\nDataFrame Info (on combined data):")
-all_data.info()
-plt.figure(figsize=(15, 7))
-sns.heatmap(all_data.isnull(), cbar=False, yticklabels=False, cmap='viridis')
-plt.title('Data Preprocessing: Heatmap of Missing Data (BEFORE Filling)')
-plt.savefig('missing_data_heatmap_before.png')
-print("\nSaved 'missing_data_heatmap_before.png'")
+# PLOT 2: missing values per column
+missing = train.drop(columns="SalePrice").isnull().sum()    # count missing cells
+missing = missing[missing > 0].sort_values(ascending=False).head(20)   # top 20 columns
+plt.figure(figsize=(9, 6))
+sns.barplot(x=missing.values, y=missing.index, color="indianred")   # horizontal bar chart
+plt.title("Top 20 columns with missing values")
+plt.xlabel("Number of missing rows")
+save("02_missing_values")
 
 
-print("\nFilling numerical data with MEAN...")
-col_to_plot = 'LotFrontage'
-numerical_cols = all_data.select_dtypes(include=np.number).columns
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-sns.histplot(all_data[col_to_plot], kde=True, ax=ax1, color='blue')
-ax1.set_title(f'Before: {col_to_plot}')
-for col in numerical_cols:
-    all_data[col] = all_data[col].fillna(all_data[col].mean())
-sns.histplot(all_data[col_to_plot], kde=True, ax=ax2, color='green')
-ax2.set_title(f'After: {col_to_plot} (Mean Filled)')
-plt.savefig('mean_fill_before_after.png')
-print("Saved 'mean_fill_before_after.png'")
-
-# 3.3: Data filling (Mode) + Dropping columns
-print("\nFilling categorical data with MODE and dropping high-null cols...")
-cols_to_drop = ['Alley', 'PoolQC', 'Fence', 'MiscFeature', 'FireplaceQu']
-all_data = all_data.drop(columns=cols_to_drop)
-print(f"Dropped columns: {cols_to_drop}")
-categorical_cols = all_data.select_dtypes(include='object').columns
-for col in categorical_cols:
-    all_data[col] = all_data[col].fillna(all_data[col].mode()[0])
-print("Filled categorical columns with mode.")
-
-# 3.4: Heatmap after filling missing values
-print("\nCreating heatmap AFTER filling missing values...")
-plt.figure(figsize=(15, 7))
-sns.heatmap(all_data.isnull(), cbar=False, yticklabels=False, cmap='viridis')
-plt.title('Data Preprocessing: Heatmap of Missing Data (AFTER Filling - Should Be Empty)')
-plt.savefig('missing_data_heatmap_after.png')
-print("Saved 'missing_data_heatmap_after.png'")
-
-# Check if any nulls remain
-remaining_nulls = all_data.isnull().sum().sum()
-print(f"\nRemaining null values after preprocessing: {remaining_nulls}")
+# PLOT 3: outliers (big house, low price)
+is_outlier = (train["GrLivArea"] > 4000) & (train["SalePrice"] < 300000)   # outlier condition
+plt.figure(figsize=(8, 5))
+plt.scatter(train.loc[~is_outlier, "GrLivArea"], train.loc[~is_outlier, "SalePrice"],
+            alpha=0.5, label="normal", color="steelblue")   # normal houses
+plt.scatter(train.loc[is_outlier, "GrLivArea"], train.loc[is_outlier, "SalePrice"],
+            color="red", s=80, label="outliers (removed)")  # outlier houses
+plt.xlabel("GrLivArea (sq ft)")
+plt.ylabel("SalePrice")
+plt.title("Outliers: big houses, low prices")
+plt.legend()                                        # show label box
+save("03_outliers")
+train = train[~is_outlier]                          # drop outlier rows
 
 
-# ---
-# 4. FEATURE SELECTION
-# ---
-print("\n--- 4. Feature Selection ---")
-# 4.1: One-Hot Encoding (converting categorical to binary)
-print("Converting categorical values to binary (One-Hot Encoding)...")
-all_data_ohc = pd.get_dummies(all_data, drop_first=True, dummy_na=False)
-print(f"Data shape before OHC: {all_data.shape}")
-print(f"Data shape after OHC: {all_data_ohc.shape}")
-
-# 4.2: Remove duplicated columns
-print("\nRemoving duplicated columns...")
-all_data_ohc = all_data_ohc.loc[:, ~all_data_ohc.columns.duplicated()]
-print(f"Data shape after OHC (deduped): {all_data_ohc.shape}")
-
-# 4.3: Scaling (to reduce biased and inaccurate predictions)
-print("\nScaling all features (StandardScaler)...")
-scaler = StandardScaler()
-all_data_scaled = scaler.fit_transform(all_data_ohc)
-all_data_scaled_df = pd.DataFrame(all_data_scaled, columns=all_data_ohc.columns,
-                                   index=all_data_ohc.index)
+# PLOT 4: correlation with price
+numeric = train.select_dtypes(include=np.number)    # numeric columns only
+corr_with_price = numeric.corr()["SalePrice"].drop("SalePrice").sort_values()   # correlation with price
+top = pd.concat([corr_with_price.head(5), corr_with_price.tail(10)])   # lowest + highest
+plt.figure(figsize=(8, 6))
+sns.barplot(x=top.values, y=top.index, palette="coolwarm", hue=top.index, legend=False)   # colored bar chart
+plt.title("Correlation with SalePrice")
+save("04_correlation_with_price")
 
 
-# ---
-# 5. DATA SPLITTING
-# ---
-print("\n--- 5. Data Splitting ---")
-# Split processed (scaled) data back into Train and Test
-X_train_processed = all_data_scaled_df.loc[train_data.index]
-X_test_processed = all_data_scaled_df.loc[test_data.index]
-
-# Create the validation split
-X_train_split, X_val, y_train_split, y_val = train_test_split(
-    X_train_processed, y_train_full, test_size=0.2, random_state=0)
-
-print(f"Training split: {len(X_train_split)}, Validation split: {len(X_val)}")
+# PLOT 5: correlation heatmap
+top_cols = numeric.corr()["SalePrice"].abs().sort_values(ascending=False).head(10).index   # top 10 features
+plt.figure(figsize=(9, 7))
+sns.heatmap(numeric[top_cols].corr(), annot=True, fmt=".2f", cmap="coolwarm", center=0)   # colored correlation grid
+plt.title("Correlation heatmap (top 10 features)")
+save("05_correlation_heatmap")
 
 
-# ---
-# 6. MODEL TRAINING
-# ---
-print("\n--- 6. Model Training (Linear Regression) ---")
-# Linear Regression Model
-model = LinearRegression()
-# We will train on full data for cross-validation
-model.fit(X_train_processed, y_train_full)
-print("Model trained on full training data for cross-validation.")
+# PLOT 6-7: price by category
+order = train.groupby("Neighborhood")["SalePrice"].median().sort_values().index   # sort by median price
+plt.figure(figsize=(12, 5))
+sns.boxplot(data=train, x="Neighborhood", y="SalePrice", order=order, color="lightsteelblue")   # price spread per group
+plt.xticks(rotation=60)                             # rotate labels
+plt.title("SalePrice by neighborhood")
+save("06_price_by_neighborhood")
+
+plt.figure(figsize=(8, 5))
+sns.boxplot(data=train, x="OverallQual", y="SalePrice", color="lightsteelblue")
+plt.title("SalePrice by overall quality")
+save("07_price_by_quality")
 
 
-# ---
-# 7. MODEL EVALUATION (K-Fold Cross-Validation)
-# ---
-print("\n--- 7. Model Evaluation (5-Fold Cross-Validation) ---")
-print("Running 5-fold cross-validation on the entire training set...")
-
-cv_model = LinearRegression()
-
-# Perform 5-fold validation and get predictions for plotting
-cv_predictions = cross_val_predict(cv_model, X_train_processed, y_train_full, cv=5)
-
-# Perform 5-fold validation for metrics
-r2_scores = cross_val_score(cv_model, X_train_processed, y_train_full,
-                             cv=5, scoring='r2')
-
-mse_scores = cross_val_score(cv_model, X_train_processed, y_train_full,
-                              cv=5, scoring='neg_mean_squared_error')
-rmse_scores = np.sqrt(-mse_scores)
-
-mae_scores = cross_val_score(cv_model, X_train_processed, y_train_full,
-                              cv=5, scoring='neg_mean_absolute_error')
-mae_scores = -mae_scores
-
-print("Cross-Validation complete. Averaging the 5 folds:")
-print(f"\n  Average R-Squared (R²): {r2_scores.mean():.4f} (Std: {r2_scores.std():.4f})")
-print(f"  Average MAE: {mae_scores.mean():.4f} (Std: {mae_scores.std():.4f})")
-print(f"  Average RMSE: {rmse_scores.mean():.4f} (Std: {rmse_scores.std():.4f})")
-
-# Calculate overall metrics from cross-validation predictions
-cv_r2 = r2_score(y_train_full, cv_predictions)
-cv_mae = mean_absolute_error(y_train_full, cv_predictions)
-cv_rmse = np.sqrt(mean_squared_error(y_train_full, cv_predictions))
-
-print("\nOverall metrics from cross-validation predictions:")
-print(f"  R-Squared (R²): {cv_r2:.4f}")
-print(f"  MAE: {cv_mae:.4f}")
-print(f"  RMSE: {cv_rmse:.4f}")
+# PREPARE DATA FOR MODELS
+def add_features(df):
+    df = df.copy()                                  # avoid changing original
+    df["TotalSF"] = df["TotalBsmtSF"].fillna(0) + df["1stFlrSF"] + df["2ndFlrSF"]   # total square feet
+    df["HouseAge"] = df["YrSold"] - df["YearBuilt"]   # age when sold
+    df["TotalBath"] = (df["FullBath"] + 0.5 * df["HalfBath"]
+                       + df["BsmtFullBath"].fillna(0) + 0.5 * df["BsmtHalfBath"].fillna(0))   # combined bathrooms
+    return df
 
 
-# ---
-# (FINAL SUBMISSION)
-# ---
-print("\n--- Retraining on full data for submission ---")
-model.fit(X_train_processed, y_train_full)
-final_preds_dollars = model.predict(X_test_processed)
+X = add_features(train.drop(columns="SalePrice"))   # features table
+y = np.log1p(train["SalePrice"])                    # log of price
+X_test = add_features(test)
 
-final_preds_dollars = np.maximum(final_preds_dollars, 0)
-print(f"Minimum prediction value: {final_preds_dollars.min():.2f} (negative values set to 0)")
+num_cols = X.select_dtypes(include=np.number).columns   # numeric column names
+cat_cols = X.select_dtypes(include="object").columns    # text column names
 
-print("\n--- ALL DONE ---")
-print("Your plots are saved as PNG files.")
+preprocess = ColumnTransformer([                    # different cleaning per type
+    ("num", Pipeline([("fill", SimpleImputer(strategy="median")),     # fill gaps: median
+                      ("scale", StandardScaler())]), num_cols),        # same scale
+    ("cat", Pipeline([("fill", SimpleImputer(strategy="constant", fill_value="None")),   # fill gaps: "None"
+                      ("onehot", OneHotEncoder(handle_unknown="ignore"))]), cat_cols),    # text to 0/1 columns
+])
 
-plt.show()
+
+# PLOT 8: compare models (5-fold cross-validation)
+models = {
+    "Ridge": Ridge(alpha=10),
+    "RandomForest": RandomForestRegressor(n_estimators=200, random_state=0, n_jobs=-1),
+    "GradientBoosting": GradientBoostingRegressor(random_state=0),
+}
+results = {}
+for name, model in models.items():
+    pipe = Pipeline([("pre", preprocess), ("model", model)])   # clean then model
+    scores = -cross_val_score(pipe, X, y, cv=5, scoring="neg_root_mean_squared_error")   # 5-fold error scores
+    results[name] = scores
+    print(f"{name}: RMSE = {scores.mean():.4f} (+/- {scores.std():.4f})")
+
+plt.figure(figsize=(7, 4))
+means = [s.mean() for s in results.values()]
+stds = [s.std() for s in results.values()]
+plt.bar(list(results.keys()), means, yerr=stds, capsize=6, color="steelblue")   # bars with error whiskers
+plt.ylabel("CV RMSE (log price), lower is better")
+plt.title("Model comparison")
+save("08_model_comparison")
+
+
+# PLOT 9: predicted vs actual
+best_name = min(results, key=lambda k: results[k].mean())   # lowest error model
+print("Best model:", best_name)
+best_pipe = Pipeline([("pre", preprocess), ("model", models[best_name])])
+pred_log = cross_val_predict(best_pipe, X, y, cv=5)   # out-of-fold predictions
+pred = np.expm1(pred_log)                           # back to dollars
+actual = np.expm1(y)
+
+plt.figure(figsize=(6, 6))
+plt.scatter(actual, pred, alpha=0.4, color="steelblue")   # one dot per house
+lims = [actual.min(), actual.max()]
+plt.plot(lims, lims, color="red", linestyle="--", label="perfect prediction")   # diagonal reference line
+plt.xlabel("Actual price")
+plt.ylabel("Predicted price")
+plt.title(f"Predicted vs actual ({best_name})")
+plt.legend()
+save("09_predicted_vs_actual")
+
+
+# PLOT 10: residuals (errors)
+residuals = y - pred_log                            # actual minus predicted
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+axes[0].scatter(pred_log, residuals, alpha=0.4, color="steelblue")
+axes[0].axhline(0, color="red", linestyle="--")     # zero-error line
+axes[0].set_xlabel("Predicted log price")
+axes[0].set_ylabel("Residual")
+axes[0].set_title("Residuals vs predictions")
+sns.histplot(residuals, kde=True, ax=axes[1], color="seagreen")   # error distribution
+axes[1].set_title("Residual distribution")
+save("10_residuals")
+
+
+# PLOT 11: feature importance
+final_pipe = Pipeline([("pre", preprocess), ("model", models["GradientBoosting"])]).fit(X, y)   # train on all data
+names = final_pipe.named_steps["pre"].get_feature_names_out()   # column names after encoding
+importances = pd.Series(final_pipe.named_steps["model"].feature_importances_, index=names)   # importance per feature
+importances = importances.sort_values().tail(15)    # top 15
+plt.figure(figsize=(8, 6))
+sns.barplot(x=importances.values, y=importances.index, color="steelblue")
+plt.title("Top 15 most important features")
+save("11_feature_importance")
+
+
+# SUBMISSION FILE
+test_pred = np.expm1(final_pipe.predict(X_test))    # predict, back to dollars
+pd.DataFrame({"Id": X_test.index, "SalePrice": test_pred}).to_csv("submission.csv", index=False)   # save Kaggle file
+print("saved submission.csv")
+print("Done. Open the 'plots' folder.")
