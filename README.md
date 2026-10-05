@@ -40,7 +40,7 @@ scikit-learn
 2. Run the script:
 
 ```bash
-python house_price_prediction.py
+main.py
 ```
 
 Plots are saved as PNG files in the project folder.
